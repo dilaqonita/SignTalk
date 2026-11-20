@@ -375,6 +375,9 @@
           canvasElementId: 'camera-canvas',
           placeholderId: 'camera-placeholder',
           flipButtonId: 'flip-camera-btn',
+          trackOnly: true,    // game murni lokal: tanpa klasifikasi/server, kabari tiap frame
+          smoothTauMs: 40,    // haluskan gerakan tangan agar drag & cubit tidak patah
+          holdMs: 300,        // tahan posisi bila deteksi hilang sesaat
           onPrediction: handleGameTracking
         });
       }

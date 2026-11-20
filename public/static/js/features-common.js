@@ -364,14 +364,20 @@ function getHandLandmarker() {
     _handLandmarkerPromise = (async () => {
       const mod = await import(`${MP_TASKS_URL}/vision_bundle.mjs`);
       const fileset = await mod.FilesetResolver.forVisionTasks(`${MP_TASKS_URL}/wasm`);
-      return mod.HandLandmarker.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: '/static/models/hand-landmarker-web.task' },
-        runningMode: 'IMAGE',
+      const options = (delegate) => ({
+        baseOptions: { modelAssetPath: '/static/models/hand-landmarker-web.task', delegate },
+        runningMode: 'VIDEO', // melacak antar frame: jauh lebih cepat & mulus dari mode IMAGE
         numHands: 2,
         minHandDetectionConfidence: 0.4,
         minHandPresenceConfidence: 0.4,
         minTrackingConfidence: 0.4
       });
+      try {
+        return await mod.HandLandmarker.createFromOptions(fileset, options('GPU'));
+      } catch (gpuErr) {
+        console.warn('GPU tidak tersedia, memakai CPU:', gpuErr);
+        return mod.HandLandmarker.createFromOptions(fileset, options('CPU'));
+      }
     })().catch(err => {
       _handLandmarkerPromise = null; // izinkan coba lagi
       throw err;
@@ -453,6 +459,9 @@ class SignTalkCamera {
     this.offscreenCtx = this.offscreenCanvas.getContext('2d');
 
     this.latestLandmarks = [];
+    this._lastEmitAt = 0;
+    this._lastClassifyAt = 0;
+    this._classifying = false;
 
     this.initEvents();
   }
@@ -638,82 +647,130 @@ class SignTalkCamera {
   }
 
   async runPredictionLoop(id) {
-    while (id === this.loopId && this.stream) {
-      const startTime = performance.now();
-      await this.captureAndPredict();
-      const elapsed = performance.now() - startTime;
-      const wait = Math.max(0, this.minFrameGapMs - elapsed);
-      await new Promise(r => setTimeout(r, wait));
-    }
-  }
-
-  // Jalur utama: deteksi di browser. Jika MediaPipe JS gagal dimuat (mis. CDN
-  // tidak terjangkau), jatuh ke jalur lama: kirim frame ke server.
-  async captureAndPredict() {
-    if (!this.stream || this.isPredicting || !this.video || this.video.readyState < 2) return;
-
+    // Jalur utama: deteksi di browser. Jika MediaPipe JS gagal dimuat (mis. CDN
+    // tidak terjangkau), jatuh ke jalur lama: kirim frame ke server.
+    let landmarker = null;
     if (!this._serverDetect) {
-      let landmarker = null;
       try {
         landmarker = await getHandLandmarker();
       } catch (err) {
         console.warn('MediaPipe JS gagal dimuat, memakai deteksi server:', err);
         this._serverDetect = true;
       }
-      if (landmarker) return this.captureAndPredictLocal(landmarker);
     }
-    return this.captureAndPredictServer();
+    if (id !== this.loopId || !this.stream) return;
+    if (landmarker) return this.runLocalLoop(id, landmarker);
+
+    while (id === this.loopId && this.stream) {
+      const startTime = performance.now();
+      await this.captureAndPredictServer();
+      const elapsed = performance.now() - startTime;
+      const wait = Math.max(0, this.minFrameGapMs - elapsed);
+      await new Promise(r => setTimeout(r, wait));
+    }
   }
 
-  async captureAndPredictLocal(landmarker) {
-    if (!this.stream || this.isPredicting) return;
-    this.isPredicting = true;
+  // Deteksi tangan tiap frame kamera (mode VIDEO). Kerangka & game bergerak
+  // sesuai fps kamera karena TIDAK menunggu server; klasifikasi jalan terpisah.
+  runLocalLoop(id, landmarker) {
+    const w = this.offscreenCanvas.width;
+    const h = this.offscreenCanvas.height;
+    const ctx = this.offscreenCtx;
+    if (!this.smoothTauMs) this.smoothTauMs = 35;
+    if (this.holdMs == null) this.holdMs = 200;
+    let lastVideoTime = -1;
+    let lastTs = 0;
 
-    try {
-      const w = this.offscreenCanvas.width;
-      const h = this.offscreenCanvas.height;
-      const ctx = this.offscreenCtx;
+    const step = () => {
+      if (id !== this.loopId || !this.stream) return;
+      const v = this.video;
+      if (v && v.readyState >= 2 && v.currentTime !== lastVideoTime) {
+        lastVideoTime = v.currentTime;
 
-      // Frame dicerminkan SEBELUM dideteksi (sama seperti MIRROR_INPUT di server)
-      ctx.save();
-      ctx.translate(w, 0);
-      ctx.scale(-1, 1);
-      ctx.drawImage(this.video, 0, 0, w, h);
-      ctx.restore();
+        // Frame dicerminkan SEBELUM dideteksi (sama seperti MIRROR_INPUT di server)
+        ctx.save();
+        ctx.translate(w, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(v, 0, 0, w, h);
+        ctx.restore();
 
-      const result = landmarker.detect(this.offscreenCanvas);
-      const hands = result.landmarks || [];
-      const landmarks = hands.map(hand => hand.map(p => ({
-        x: Math.round(p.x * 10000) / 10000,
-        y: Math.round(p.y * 10000) / 10000
-      })));
+        let ts = performance.now();
+        if (ts <= lastTs) ts = lastTs + 1; // timestamp harus naik terus
+        lastTs = ts;
 
-      let rawResult;
-      if (hands.length === 0) {
-        rawResult = {
-          detected: false, detected_hands: 0, prediction: '-', confidence: 0,
-          message: 'Tidak ada tangan terdeteksi.', landmarks: []
-        };
-      } else if (this.trackOnly) {
-        rawResult = {
-          detected: true, detected_hands: hands.length, prediction: '-', confidence: 0,
-          message: 'Tangan terdeteksi.', landmarks
-        };
-      } else {
-        const response = await fetch('/api/predict', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ features: extractFeaturesJS(hands, w, h) })
-        });
-        const data = await response.json();
-        rawResult = { ...data, detected_hands: hands.length, landmarks };
+        try {
+          const result = landmarker.detectForVideo(this.offscreenCanvas, ts);
+          this._onLocalDetection(result.landmarks || [], w, h);
+        } catch (err) {
+          console.warn('Deteksi error:', err);
+        }
       }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
 
-      this._applyResult(rawResult);
-    } catch (err) {
-      console.warn('Prediksi error:', err);
-    } finally {
-      this.isPredicting = false;
+  _outLandmarks() {
+    return (this.displayLandmarks && this.displayLandmarks.length)
+      ? this.displayLandmarks
+      : this.latestLandmarks;
+  }
+
+  _onLocalDetection(hands, w, h) {
+    const landmarks = hands.map(hand => hand.map(p => ({
+      x: Math.round(p.x * 10000) / 10000,
+      y: Math.round(p.y * 10000) / 10000
+    })));
+    this._updateLandmarks(landmarks);
+
+    const handCount = hands.length;
+    const now = performance.now();
+
+    // Mode track (Game): kabari tiap frame, tanpa klasifikasi/server sama sekali
+    if (this.trackOnly) {
+      if (this.onPrediction) {
+        this.onPrediction({
+          success: true,
+          detected: handCount > 0,
+          detected_hands: handCount,
+          prediction: '-',
+          confidence: 0,
+          message: handCount > 0 ? 'Tangan terdeteksi.' : 'Tidak ada tangan terdeteksi.',
+          landmarks: this._outLandmarks()
+        });
+      }
+      return;
+    }
+
+    // Tangan hilang: perbarui tampilan segera, tidak perlu menunggu server
+    if (handCount === 0) {
+      if (now - this._lastEmitAt >= 100) {
+        this._lastEmitAt = now;
+        this._emitPrediction({
+          detected: false, detected_hands: 0, prediction: '-', confidence: 0,
+          message: 'Tidak ada tangan terdeteksi.'
+        });
+      }
+      return;
+    }
+
+    // Klasifikasi huruf: satu permintaan sekali waktu, TIDAK memblokir deteksi
+    if (!this._classifying && now - this._lastClassifyAt >= 60) {
+      this._classifying = true;
+      this._lastClassifyAt = now;
+      fetch('/api/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ features: extractFeaturesJS(hands, w, h) })
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (!this.stream) return;
+          this._lastEmitAt = performance.now();
+          this._emitPrediction({ ...data, detected_hands: handCount });
+        })
+        .catch(err => console.warn('Prediksi error:', err))
+        .finally(() => { this._classifying = false; });
     }
   }
 
@@ -750,10 +807,15 @@ class SignTalkCamera {
     }
   }
 
-  // Terapkan hasil deteksi/prediksi (dari browser maupun server) ke state kamera
+  // Jalur server (cadangan): perbarui landmark + prediksi sekaligus
   _applyResult(rawResult) {
-    if (rawResult && rawResult.landmarks && rawResult.landmarks.length > 0) {
-      this.latestLandmarks = rawResult.landmarks;
+    this._updateLandmarks((rawResult && rawResult.landmarks) || []);
+    this._emitPrediction(rawResult);
+  }
+
+  _updateLandmarks(landmarks) {
+    if (landmarks && landmarks.length > 0) {
+      this.latestLandmarks = landmarks;
       this.missedLandmarksCount = 0;
       this.lastSeenAt = performance.now();
     } else {
@@ -768,24 +830,25 @@ class SignTalkCamera {
         this.latestLandmarks = [];
       }
     }
+  }
 
-    if (this.onPrediction && rawResult) {
-      const stable = this.stabilizer.update(
-        rawResult.prediction || '-',
-        rawResult.confidence || 0,
-        rawResult.detected
-      );
+  _emitPrediction(rawResult) {
+    if (!this.onPrediction || !rawResult) return;
+    const stable = this.stabilizer.update(
+      rawResult.prediction || '-',
+      rawResult.confidence || 0,
+      rawResult.detected
+    );
 
-      this.onPrediction({
-        success: true,
-        detected: stable.detected,
-        detected_hands: rawResult.detected_hands || 0,
-        prediction: stable.label,
-        confidence: stable.confidence,
-        message: rawResult.message || '',
-        landmarks: this.latestLandmarks
-      });
-    }
+    this.onPrediction({
+      success: true,
+      detected: stable.detected,
+      detected_hands: rawResult.detected_hands || 0,
+      prediction: stable.label,
+      confidence: stable.confidence,
+      message: rawResult.message || '',
+      landmarks: this._outLandmarks()
+    });
   }
 }
 
