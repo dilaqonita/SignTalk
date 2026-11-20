@@ -1,6 +1,4 @@
 # Semua pola diawali "/" agar HANYA berlaku di root repo.
-# (Tanpa "/", pola seperti hand_landmarker.task ikut membuang
-#  public/static/models/hand_landmarker.task yang dibutuhkan browser.)
 /venv/
 /.venv/
 __pycache__/
@@ -11,8 +9,6 @@ __pycache__/
 /scripts/
 /Gambar/
 /*.md
-/hand_landmarker.task
-/model/hand_landmarker.task
 /model/*.pkl
 /model/evaluation_*/
 /model/*.zip

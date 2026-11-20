@@ -365,7 +365,7 @@ function getHandLandmarker() {
       const mod = await import(`${MP_TASKS_URL}/vision_bundle.mjs`);
       const fileset = await mod.FilesetResolver.forVisionTasks(`${MP_TASKS_URL}/wasm`);
       return mod.HandLandmarker.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: '/static/models/hand_landmarker.task' },
+        baseOptions: { modelAssetPath: '/static/models/hand-landmarker-web.task' },
         runningMode: 'IMAGE',
         numHands: 2,
         minHandDetectionConfidence: 0.4,
