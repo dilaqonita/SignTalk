@@ -71,6 +71,7 @@ def load_random_forest():
         # Urutan: .npz ringan (numpy murni, tanpa scikit-learn) ->
         # .pkl ringan (120 pohon) -> v4 penuh.
         candidates = [
+            model_dir / "random_forest_v6_lite.npz",   # V6: + rekaman baru (kiri/kanan, terang/gelap)
             model_dir / "random_forest_v4_lite.npz",
             model_dir / "random_forest_v4_lite.pkl",
             model_dir / "random_forest_v4.pkl",
@@ -86,6 +87,7 @@ def load_random_forest():
     metadata_files = {
         "random_forest_v4": model_dir / "model_v4_meta.json",
         "random_forest_v4_lite": model_dir / "model_v4_meta.json",
+        "random_forest_v6_lite": model_dir / "model_v6_meta.json",
         "random_forest_v3_augmented": model_dir / "model_v3_augmented_meta.json",
         "random_forest_v2": META_PATH,
         "random_forest": META_PATH,
