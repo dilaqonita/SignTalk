@@ -135,18 +135,19 @@ function handPhotoName(label) {
 function attachHandPhoto(cardBack, label) {
   const img = cardBack.querySelector('.cf-card-photo');
   if (!img) return;
-  // Coba nama persis (A.jpg, A.jpeg) lalu huruf kecil (a.jpg, a.jpeg), tiap ekstensi
   const name = handPhotoName(label);
-  // Kata (mis. "Belajar") memakai GIF berhuruf kecil -> coba itu dulu agar tidak
+  // Kata (mis. "Belajar") memakai WebP/GIF berhuruf kecil -> coba itu dulu agar tidak
   // membuang banyak request 404 (server Linux/Vercel membedakan huruf besar/kecil).
   const isWord = String(label).trim().length > 2 && isNaN(Number(label));
+  const isNumber = !isWord && !isNaN(Number(label));
   const names = [...new Set(isWord ? [name.toLowerCase(), name] : [name, name.toLowerCase()])];
   const exts = isWord
-    ? ['gif', 'jpg', 'jpeg', 'png', 'webp']
-    : ['jpg', 'jpeg', 'png', 'webp', 'gif'];
+    ? ['webp', 'gif', 'jpg', 'jpeg', 'png']
+    : (isNumber ? ['jpeg', 'jpg', 'png', 'webp', 'gif'] : ['jpg', 'jpeg', 'png', 'webp', 'gif']);
   const candidates = [];
   names.forEach(n => exts.forEach(e => candidates.push('/static/img/hands/' + encodeURIComponent(n) + '.' + e)));
   let i = 0;
+  img.decoding = 'async';
   img.onload = () => cardBack.classList.add('has-photo');
   img.onerror = () => {
     i += 1;
@@ -498,6 +499,21 @@ class SignTalkCamera {
     this.video.addEventListener('loadedmetadata', apply, { once: true });
   }
 
+  // Penanda kecil di atas kamera selama model deteksi (beberapa MB) masih diunduh
+  _setLoadingModel(on) {
+    const box = this.canvas && this.canvas.parentElement;
+    if (!box) return;
+    let el = box.querySelector('.model-loading-pill');
+    if (on && !el) {
+      el = document.createElement('div');
+      el.className = 'model-loading-pill';
+      el.textContent = 'Memuat model deteksi tangan…';
+      box.appendChild(el);
+    } else if (!on && el) {
+      el.remove();
+    }
+  }
+
   _resetBoxAspect() {
     const box = this.canvas && this.canvas.parentElement;
     if (box) box.style.aspectRatio = '';
@@ -546,6 +562,7 @@ class SignTalkCamera {
   stop() {
     this.loopId++;
     this._resetBoxAspect();
+    this._setLoadingModel(false);
 
     if (this.stream) {
       this.stream.getTracks().forEach(track => track.stop());
@@ -674,11 +691,14 @@ class SignTalkCamera {
     // tidak terjangkau), jatuh ke jalur lama: kirim frame ke server.
     let landmarker = null;
     if (!this._serverDetect) {
+      this._setLoadingModel(true);
       try {
         landmarker = await getHandLandmarker();
       } catch (err) {
         console.warn('MediaPipe JS gagal dimuat, memakai deteksi server:', err);
         this._serverDetect = true;
+      } finally {
+        this._setLoadingModel(false);
       }
     }
     if (id !== this.loopId || !this.stream) return;
@@ -950,7 +970,12 @@ function initKamusCoverFlow({
       </div>
     `;
 
-    attachHandPhoto(card.querySelector('.cf-card-back'), item.char);
+    // Foto dimuat malas (lazy): baru diminta saat kartu mendekat ke tengah
+    card._loadPhoto = () => {
+      if (card._photoRequested) return;
+      card._photoRequested = true;
+      attachHandPhoto(card.querySelector('.cf-card-back'), item.char);
+    };
 
     card.addEventListener('click', () => {
       const isCenter = card.classList.contains('card-center');
@@ -998,6 +1023,10 @@ function initKamusCoverFlow({
 
     const total = activePool.length;
 
+    // Kartu tengah dimuat paling dulu
+    const centerCard = cardElements[currentIndex];
+    if (centerCard && centerCard._loadPhoto) centerCard._loadPhoto();
+
     cardElements.forEach((card, idx) => {
       const diff = idx - currentIndex;
       let wrappedDiff = diff;
@@ -1027,6 +1056,9 @@ function initKamusCoverFlow({
       } else {
         card.classList.add('card-hidden');
       }
+
+      // Muat foto hanya untuk kartu yang terlihat (hemat bandwidth)
+      if (!card.classList.contains('card-hidden') && card._loadPhoto) card._loadPhoto();
     });
   }
 
