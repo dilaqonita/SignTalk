@@ -1,18 +1,18 @@
-venv/
-.venv/
+# Semua pola diawali "/" agar HANYA berlaku di root repo.
+# (Tanpa "/", pola seperti hand_landmarker.task ikut membuang
+#  public/static/models/hand_landmarker.task yang dibutuhkan browser.)
+/venv/
+/.venv/
 __pycache__/
-_backup_gif_asli/
-_hf_space/
-dataset/
-tools/
-scripts/
-Gambar/
-*.md
-hand_landmarker.task
-model/hand_landmarker.task
-model/random_forest.pkl
-model/random_forest_v2.pkl
-model/random_forest_v3_augmented.pkl
-model/*.pkl
-model/evaluation_*/
-model/*.zip
+/_backup_gif_asli/
+/_hf_space/
+/dataset/
+/tools/
+/scripts/
+/Gambar/
+/*.md
+/hand_landmarker.task
+/model/hand_landmarker.task
+/model/*.pkl
+/model/evaluation_*/
+/model/*.zip

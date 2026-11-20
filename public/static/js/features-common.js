@@ -137,8 +137,13 @@ function attachHandPhoto(cardBack, label) {
   if (!img) return;
   // Coba nama persis (A.jpg, A.jpeg) lalu huruf kecil (a.jpg, a.jpeg), tiap ekstensi
   const name = handPhotoName(label);
-  const names = [...new Set([name, name.toLowerCase()])];
-  const exts = ['jpg', 'jpeg', 'png', 'webp', 'gif'];  // jpg dulu untuk priority; gif untuk kata
+  // Kata (mis. "Belajar") memakai GIF berhuruf kecil -> coba itu dulu agar tidak
+  // membuang banyak request 404 (server Linux/Vercel membedakan huruf besar/kecil).
+  const isWord = String(label).trim().length > 2 && isNaN(Number(label));
+  const names = [...new Set(isWord ? [name.toLowerCase(), name] : [name, name.toLowerCase()])];
+  const exts = isWord
+    ? ['gif', 'jpg', 'jpeg', 'png', 'webp']
+    : ['jpg', 'jpeg', 'png', 'webp', 'gif'];
   const candidates = [];
   names.forEach(n => exts.forEach(e => candidates.push('/static/img/hands/' + encodeURIComponent(n) + '.' + e)));
   let i = 0;
